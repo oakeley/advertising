@@ -36,13 +36,6 @@ from tensordict.nn import TensorDictModule, TensorDictSequential
 device = torch.device("cpu")  # or "cuda" if you have GPU support
 
 # Generate Realistic Synthetic Data
-#Platzierung:
-#Organisch: Erscheint aufgrund des Suchalgorithmus, ohne Bezahlung.
-#Paid: Wird aufgrund einer Werbekampagne oder bezahlten Platzierung angezeigt.
-#Kosten:
-#Organisch: Es fallen in der Regel keine direkten Kosten pro Klick oder Impression an.
-#Paid: Werbetreibende zahlen oft pro Klick (CPC) oder pro Impression (CPM = pro Sichtkontakt, unabhängig ob jemand klickt oder nicht).
-# Generate Realistic Synthetic Data
 def generate_synthetic_data(num_samples=1000):
     base_difficulty = np.random.beta(2.5, 3.5, num_samples)
     data = {
@@ -470,14 +463,14 @@ class AdOptimizationEnv(EnvBase):
             return 0.0
         
         reward = 0.0
-        # Iterate thourh all keywords
+        # Iterate through all keywords
         for i in range(self.num_keywords):
             sample = current_pki.iloc[i]
             cost = sample["ad_spend"]
             ctr = sample["paid_ctr"]
-            if action[i] == True and cost > 5000:
+            if action[i] == 1 and cost > 5000:
                 reward += 1.0
-            elif action[i] == False and ctr > 0.15:
+            elif action[i] == 0 and ctr > 0.15:
                 reward += 1.0
             else:
                 reward -= 1.0
@@ -704,7 +697,7 @@ eval_episodes = 100
 def evaluate_policy(policy, env, num_episodes=100):
     total_reward = 0
     episode_lengths = []
-    action_counts = {0: 0, 1: 0}  # 0: conservative, 1: aggressive
+    action_counts = {i: 0 for i in range(env.action_spec.shape[-1])}  # Initialize action counts for all possible actions
     decisions = []
     rewards = []
     states = []
