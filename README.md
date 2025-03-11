@@ -1,124 +1,168 @@
 # Digital Advertising Optimization with Reinforcement Learning
 
+This repository contains a reinforcement learning (RL) framework designed to optimize digital advertising strategies using Deep Q-Learning. The system learns optimal bidding strategies by simulating advertising campaigns and making decisions based on various advertising metrics.
+
 ## Project Overview
 
-This project implements a reinforcement learning (RL) framework for optimizing digital advertising strategies using PyTorch and TorchRL. The system models the complex decision-making process in paid advertising campaigns, where marketers must continuously decide between conservative (decrease bid/budget) and aggressive (increase bid/budget) actions based on campaign performance metrics.
+The system uses Deep Q-Networks (DQN) to learn when to adopt either conservative or aggressive advertising strategies based on keyword characteristics and campaign performance. It analyzes factors such as:
 
-## Scientific Background
+- Keyword competitiveness
+- Organic ranking and performance
+- Paid click metrics
+- Conversion rates and ROAS (Return on Ad Spend)
+- Cost per click and acquisition
 
-### Reinforcement Learning for Decision Optimization
+## Features
 
-Reinforcement learning offers a computational framework that aligns with the iterative nature of digital advertising optimization. In contrast to supervised learning approaches, which require labeled optimal decisions, RL enables the discovery of optimal bidding policies through an exploration-exploitation paradigm. This is particularly valuable in advertising contexts, where the relationship between actions and outcomes exhibits temporal dependencies and environmental stochasticity.
+- **Synthetic Data Generation**: Creates realistic advertising data with appropriate correlations between metrics
+- **RL Environment**: Simulates a digital advertising environment with state transitions and rewards
+- **Deep Q-Network**: Neural network model for learning advertising optimization policies
+- **Experience Replay**: Memory buffer for more efficient and stable learning
+- **Epsilon-Greedy Exploration**: Balance between exploring new strategies and exploiting known effective ones
+- **Comprehensive Evaluation**: Detailed metrics and visualizations of model performance
 
-The project employs a **Deep Q-Network (DQN)** architecture, which utilizes function approximation to learn a policy mapping from high-dimensional state representations (advertising metrics) to action values. This approach has several advantages over traditional methods:
+## Sample Output
 
-1. **Non-linear feature interaction modeling**: Neural networks can capture complex relationships between advertising metrics that linear models would miss
-2. **Experience replay**: The replay buffer mechanism mitigates temporal correlations in sequential decision data
-3. **Value iteration stability**: The target network mechanism provides more stable learning targets
+```
+Using device: cuda
+Starting digital advertising optimization pipeline...
+Results will be saved to: ad_optimization_results_20250311_112735
+Generating synthetic dataset...
+Synthetic dataset saved to ad_optimization_results_20250311_112735/synthetic_ad_data.csv
+Dataset summary:
+Shape: (1000, 17)
+Feature stats:
+       competitiveness  difficulty_score  organic_rank  organic_clicks  organic_ctr  paid_clicks     paid_ctr     ad_spend  ad_conversions      ad_roas  conversion_rate  cost_per_click
+count      1000.000000       1000.000000   1000.000000     1000.000000  1000.000000    1000.0000  1000.000000  1000.000000     1000.000000  1000.000000      1000.000000     1000.000000
+mean          0.418282          0.418907      4.286000      125.000000     0.026165      63.3740     0.026496   260.633521        4.203000     1.137278         0.077270        4.452296
+std           0.206529          0.152807      1.687321      191.484491     0.018377     179.9339     0.020284   649.355848       15.083212     1.277420         0.062721        2.113999
+min           0.008723          0.039553      1.000000        1.000000     0.010000       0.0000     0.010000     0.000000        0.000000     0.500000         0.010000        0.573723
+25%           0.257963          0.308226      3.000000       26.000000     0.010328       9.0000     0.011712    32.123617        0.000000     0.500000         0.028243        2.833476
+50%           0.407154          0.414651      4.000000       60.000000     0.020227      22.0000     0.018457    88.178336        1.000000     0.500000         0.060762        4.278748
+75%           0.574862          0.528856      6.000000      144.000000     0.034871      56.2500     0.034998   241.174143        3.000000     1.083987         0.106583        5.701865
+max           0.913124          0.839623      9.000000     2018.000000     0.114515    3069.0000     0.155394  7721.303514      277.000000     5.000000         0.300000       10.000000
+Training RL agent...
+Starting training...
+Episode 10/200, Avg Reward: -471.75, Epsilon: 0.95
+...
+Episode 200/200, Avg Reward: -269.10, Epsilon: 0.37
+Training completed!
+...
+Pipeline completed successfully. All results saved to ad_optimization_results_20250311_112735
+```
 
-### Digital Advertising Dynamics
+## Project Structure
 
-The environment model incorporates key advertising metrics and their interdependencies:
+The main script `Digital_Advertising_Env_Roger_Edward.py` contains:
 
-- **Competitiveness-CTR relationship**: Keywords with higher competitiveness typically demonstrate lower click-through rates due to increased auction pressure
-- **Spend-conversion correlation**: Conversion dynamics follow diminishing returns as spend increases
-- **Rank-performance coupling**: Organic and paid position effects are modeled with realistic position bias curves
-- **Cost-quality tradeoffs**: The tension between cost efficiency (CPA/ROAS) and volume metrics
+- Data generation functions
+- Environment definition
+- Neural network architecture
+- Training and evaluation pipeline
+- Visualization utilities
 
-## Technical Implementation
+## Getting Started
 
-### Environment Architecture
+### Prerequisites
 
-The custom `AdOptimizationEnv` class implements the TorchRL `EnvBase` interface, providing:
+The project requires Python 3.13 and several libraries including PyTorch, NumPy, Pandas, Matplotlib, and Seaborn.
 
-- **State representation**: A tensor of normalized advertising metrics
-- **Action space**: Discrete binary actions (conservative/aggressive) using OneHot encoding
-- **Reward function**: Multi-factor evaluation incorporating ROAS, CPA, CTR, and spend metrics
-- **Transition dynamics**: Realistic state transitions based on empirical advertising data distributions
+### Environment Setup
 
-### Agent Architecture
+Create a conda environment with Python 3.13:
 
-The DQN agent utilizes:
+```bash
+# Create a new conda environment
+conda create -n ad-optimization python=3.13
+conda activate ad-optimization
 
-- **Two-layer neural network**: The value function is represented by a multi-layer perceptron with ReLU activations
-- **ε-greedy exploration**: Annealed exploration schedule transitioning from exploration to exploitation
-- **Target network synchronization**: Soft updates to stabilize learning
-- **Experience replay**: Buffer sampling to break temporal correlations
+# Install required packages
+conda install -c pytorch pytorch
+conda install numpy pandas matplotlib seaborn
+conda install -c conda-forge tqdm ipykernel
+```
 
-### Data Generation and Integration
+Or use the environment.yml file:
 
-The environment accepts either:
+```bash
+# Create environment from file
+conda env create -f environment.yml
+conda activate ad-optimization
+```
 
-1. **Synthetic data**: Generated with realistic distributions and correlations between metrics
-2. **Real-world data**: Integration pathways for various advertising data sources
+### Environment YAML
 
-## Evaluation Framework
+```yaml
+name: ad-optimization
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.13
+  - pytorch
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - ipykernel
+  - tqdm
+  - pip
+  - pip:
+    - torchvision
+```
 
-The project includes a comprehensive evaluation methodology:
+## Usage
 
-1. **Performance metrics**:
-   - Average reward
-   - Success rate (positive reward decisions)
-   - Action distribution analysis
-   
-2. **Strategy analysis**:
-   - Conditional action probabilities under different scenarios
-   - Feature importance quantification through perturbation analysis
-   
-3. **Visualization tools**:
-   - Training convergence monitoring
-   - Decision quality matrices
-   - Feature distribution analysis
+Run the main script:
 
-## Scientific Contributions
+```bash
+python Digital_Advertising_Env_Roger_Edward.py
+```
 
-This implementation advances digital advertising optimization through:
+The script will:
+1. Generate synthetic advertising data
+2. Train the RL agent
+3. Evaluate the trained model
+4. Create visualizations of training progress and performance
+5. Save the trained model and all outputs to a timestamped directory
 
-1. **State representation engineering**: Capturing the multidimensional nature of advertising performance
-2. **Reward function design**: Balancing short-term efficiency with long-term customer acquisition
-3. **Realistic synthetic data generation**: Modeling the interdependencies of advertising metrics
-4. **Interpretability mechanisms**: Providing transparency into learned policies
+## Output Files
 
-## Usage Instructions
+The program creates a timestamped directory containing:
+- Synthetic dataset (CSV)
+- Trained model (PyTorch)
+- Evaluation metrics (text file)
+- Training progress visualization
+- Evaluation visualization
 
-1. **Environment setup**:
-   ```python
-   from ad_optimization import generate_synthetic_data, AdOptimizationEnv
-   
-   # Generate data
-   dataset = generate_synthetic_data(5000)
-   
-   # Initialize environment
-   env = AdOptimizationEnv(dataset)
-   ```
+## Key Components
 
-2. **Agent training**:
-   ```python
-   from ad_optimization import train_ad_optimization_agent
-   
-   # Train agent
-   policy, rewards = train_ad_optimization_agent(dataset, num_iterations=500)
-   ```
+### AdEnv Class
+Simulates the digital advertising environment, providing observations and rewards based on keyword characteristics and actions taken.
 
-3. **Evaluation**:
-   ```python
-   from ad_optimization import evaluate_policy, visualize_evaluation
-   
-   # Evaluate trained policy
-   metrics = evaluate_policy(policy, env, num_episodes=100)
-   
-   # Visualize results
-   visualize_evaluation(metrics, env.feature_columns)
-   ```
+### QNetwork Class
+Neural network architecture for approximating the Q-function, predicting the expected future rewards for each action.
 
-## Extensions and Future Work
+### DQNAgent Class
+Implements the reinforcement learning agent with policy and target networks, epsilon-greedy exploration, and training logic.
 
-1. **Continuous action spaces**: Extending beyond binary decisions to continuous bid adjustments
-2. **Multi-objective optimization**: Explicitly modeling the tradeoffs between volume and efficiency
-3. **Hierarchical policies**: Implementing different policies for different campaign types/stages
-4. **Contextual constraints**: Incorporating budget limitations and business constraints
-5. **Causal modeling**: Addressing the selection bias inherent in advertising data
+### ReplayBuffer Class
+Stores agent experiences (state, action, reward, next state, done) for more efficient and stable learning.
 
-## Conclusion
+## Customization
 
-This reinforcement learning framework provides a sophisticated approach to digital advertising optimization, adapting to complex advertising dynamics while providing interpretable decision policies. The system balances exploration with exploitation to discover effective bidding strategies across diverse advertising scenarios.
+You can customize the project by:
+- Adjusting the `feature_columns` list to include different metrics
+- Modifying the reward function in `_compute_reward` to align with specific business objectives
+- Tuning hyperparameters like learning rate, epsilon decay, or network architecture
+- Generating more synthetic data samples for more robust training
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- This project uses techniques from Deep Q-Learning literature
+- The synthetic data generation is designed to mimic real-world digital advertising patterns
