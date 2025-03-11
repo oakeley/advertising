@@ -160,7 +160,7 @@ You can customize the project by:
 
 ## License
 
-This project is licensed under the GPL v3
+This project is licensed under the GPL v3. See the file LICENSE for details.
 
 ## Acknowledgments
 
