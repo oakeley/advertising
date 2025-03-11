@@ -11,18 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
 import os
-from typing import Optional
-import traceback
-
-# TorchRL imports
-from torchrl.envs import EnvBase
-from torchrl.data.replay_buffers import ReplayBuffer, LazyTensorStorage
-from torchrl.objectives import DQNLoss, SoftUpdate
-from torchrl.collectors import SyncDataCollector
-from tensordict import TensorDict
-from tensordict.nn import TensorDictModule, TensorDictSequential
-from torchrl.modules import EGreedyModule, MLP, QValueModule
-from torchrl.data import OneHot, Composite, Unbounded
+from collections import deque
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -137,119 +126,8 @@ feature_columns = [
     "cost_per_click"
 ]
 
-# Define Ad Optimization Environment
-class AdOptimizationEnv(EnvBase):
-    def __init__(self, dataset, device=None):
-        """Initialize the ad optimization environment.
-        
-        Args:
-            dataset: DataFrame containing advertising data
-        """
-        super().__init__(device=device)
-        
-        # Ensure all numeric columns are float32
-        self.dataset = dataset.copy()
-        for col in feature_columns:
-            self.dataset[col] = self.dataset[col].astype(np.float32)
-            
-        self.feature_columns = feature_columns
-        self.num_features = len(self.feature_columns)
-        self.current_index = 0
-        self.max_index = len(dataset) - 1
-        
-        # Define spaces
-        self.action_spec = OneHot(n=2, device=self.device)  # Binary action: 0=conservative, 1=aggressive
-        self.observation_spec = Composite(
-            observation=Unbounded(shape=(self.num_features,), dtype=torch.float32, device=self.device)
-        )
-        self.reward_spec = Unbounded(shape=(1,), dtype=torch.float32, device=self.device)
-    
-    def _reset(self, tensordict=None):
-        """Reset environment and return initial state."""
-        self.current_index = 0
-        sample = self.dataset.iloc[self.current_index]
-        
-        # Convert feature values to a float32 numpy array
-        features = sample[self.feature_columns].values.astype(np.float32)
-        state = torch.tensor(features, dtype=torch.float32, device=self.device)
-        
-        # Create result tensordict
-        if tensordict is None:
-            tensordict = TensorDict({}, batch_size=[])
-        
-        tensordict.update({
-            "observation": state,
-            "done": torch.tensor(False, dtype=torch.bool, device=self.device)
-        })
-        
-        return tensordict
-    
-    def _step(self, tensordict):
-        """Execute one step in the environment."""
-        # Get action from tensordict
-        action = tensordict["action"]
-        
-        # Handle action - either get the index of the max value or check if it's already an integer
-        if isinstance(action, torch.Tensor):
-            if action.dtype == torch.bool:
-                # Convert boolean tensor to integer index
-                action_idx = action.nonzero(as_tuple=True)[0].item() if action.any() else 0
-            else:
-                # Get the index of the highest value
-                action_idx = action.argmax().item()
-        else:
-            action_idx = action
-        
-        # Get current state
-        sample = self.dataset.iloc[self.current_index]
-        
-        # Calculate reward
-        reward = self._compute_reward(action_idx, sample)
-        
-        # Move to next state
-        self.current_index = min(self.current_index + 1, self.max_index)
-        next_sample = self.dataset.iloc[self.current_index]
-        
-        # Convert feature values to float32 numpy array
-        next_features = next_sample[self.feature_columns].values.astype(np.float32)
-        next_state = torch.tensor(next_features, dtype=torch.float32, device=self.device)
-        
-        # Check if episode is done
-        done = self.current_index >= self.max_index
-        
-        # Create result tensordict with standard TorchRL format
-        result = TensorDict({
-            "observation": next_state,
-            "reward": torch.tensor([reward], dtype=torch.float32, device=self.device),
-            "done": torch.tensor(done, dtype=torch.bool, device=self.device),
-            "terminated": torch.tensor(done, dtype=torch.bool, device=self.device),
-        }, batch_size=[])
-        
-        return result
-    
-    def _compute_reward(self, action, sample):
-        """Compute reward based on action and current state."""
-        cost = float(sample["ad_spend"])
-        ctr = float(sample["paid_ctr"])
-        revenue = float(sample["conversion_value"])
-        roas = revenue / cost if cost > 0 else 0.0
-        
-        if action == 1:  # Aggressive strategy
-            reward = 2.0 if (cost > 5000 and roas > 2.0) else (1.0 if roas > 1.0 else -1.0)
-        else:  # Conservative strategy
-            reward = 1.0 if ctr > 0.15 else -0.5
-        
-        return reward
-    
-    def _set_seed(self, seed: Optional[int] = None):
-        """Set random seed for the environment."""
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-            random.seed(seed)
-
-# Simplified environment for direct evaluation
-class SimpleAdEnv:
+# Simple Ad Environment
+class AdEnv:
     def __init__(self, dataset):
         # Ensure all numeric columns are float32
         self.dataset = dataset.copy()
@@ -270,7 +148,7 @@ class SimpleAdEnv:
         features = sample[self.feature_columns].values.astype(np.float32)
         state = torch.tensor(features, dtype=torch.float32, device=device)
         
-        return state, False
+        return state
     
     def step(self, action):
         """Execute one step in the environment."""
@@ -307,6 +185,220 @@ class SimpleAdEnv:
         
         return reward
 
+# Simple Q-Network
+class QNetwork(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(QNetwork, self).__init__()
+        self.fc1 = nn.Linear(input_size, 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, output_size)
+        
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+# Experience Replay Buffer
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+    
+    def add(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+    
+    def sample(self, batch_size):
+        states, actions, rewards, next_states, dones = zip(*random.sample(self.buffer, batch_size))
+        return (torch.stack(states), 
+                torch.tensor(actions, dtype=torch.long, device=device), 
+                torch.tensor(rewards, dtype=torch.float, device=device),
+                torch.stack(next_states), 
+                torch.tensor(dones, dtype=torch.bool, device=device))
+    
+    def __len__(self):
+        return len(self.buffer)
+
+# Agent with epsilon-greedy exploration
+class DQNAgent:
+    def __init__(self, state_size, action_size, learning_rate=0.001):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.policy_net = QNetwork(state_size, action_size).to(device)
+        self.target_net = QNetwork(state_size, action_size).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
+        self.epsilon = 1.0
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.995
+        self.gamma = 0.99
+        
+    def select_action(self, state, eval_mode=False):
+        if eval_mode or random.random() > self.epsilon:
+            with torch.no_grad():
+                return self.policy_net(state).argmax().item()
+        else:
+            return random.randrange(self.action_size)
+    
+    def update_epsilon(self):
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+    
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+    
+    def train(self, batch):
+        states, actions, rewards, next_states, dones = batch
+        
+        # Get current Q values
+        current_q = self.policy_net(states).gather(1, actions.unsqueeze(1))
+        
+        # Compute target Q values
+        with torch.no_grad():
+            next_q = self.target_net(next_states).max(1)[0]
+            target_q = rewards + self.gamma * next_q * (~dones)
+        
+        # Compute loss
+        loss = nn.MSELoss()(current_q.squeeze(), target_q)
+        
+        # Optimize
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return loss.item()
+
+# Training function
+def train_dqn(env, agent, num_episodes=500, batch_size=64, target_update=10, buffer_size=10000):
+    replay_buffer = ReplayBuffer(buffer_size)
+    rewards_history = []
+    losses = []
+    epsilon_values = []
+    
+    print("Starting training...")
+    for episode in range(num_episodes):
+        state = env.reset()
+        episode_reward = 0
+        episode_loss = 0
+        step_count = 0
+        
+        done = False
+        while not done:
+            # Select action
+            action = agent.select_action(state)
+            
+            # Take action
+            next_state, reward, done = env.step(action)
+            
+            # Store transition
+            replay_buffer.add(state, action, reward, next_state, done)
+            
+            # Update state
+            state = next_state
+            
+            # Train agent
+            if len(replay_buffer) > batch_size:
+                batch = replay_buffer.sample(batch_size)
+                loss = agent.train(batch)
+                episode_loss += loss
+                step_count += 1
+            
+            episode_reward += reward
+            
+            # Update target network
+            if step_count % target_update == 0 and step_count > 0:
+                agent.update_target_network()
+        
+        # Update exploration rate
+        agent.update_epsilon()
+        
+        # Record metrics
+        rewards_history.append(episode_reward)
+        epsilon_values.append(agent.epsilon)
+        if step_count > 0:
+            losses.append(episode_loss / step_count)
+        
+        # Log progress
+        if (episode + 1) % 10 == 0:
+            avg_reward = sum(rewards_history[-10:]) / 10
+            print(f"Episode {episode+1}/{num_episodes}, Avg Reward: {avg_reward:.2f}, Epsilon: {agent.epsilon:.2f}")
+    
+    print("Training completed!")
+    
+    return {
+        "rewards": rewards_history,
+        "losses": losses,
+        "epsilon_values": epsilon_values
+    }
+
+# Evaluation function
+def evaluate_agent(env, agent, num_episodes=10):
+    total_reward = 0
+    episode_lengths = []
+    action_counts = {0: 0, 1: 0}  # 0=conservative, 1=aggressive
+    decisions = []
+    rewards = []
+    states = []
+    conservative_rewards = []
+    aggressive_rewards = []
+    
+    for episode in range(num_episodes):
+        state = env.reset()
+        episode_reward = 0
+        steps = 0
+        done = False
+        
+        while not done:
+            # Get action using greedy policy
+            action = agent.select_action(state, eval_mode=True)
+            
+            # Record state
+            states.append(state.cpu().numpy())
+            action_counts[action] += 1
+            
+            # Take action
+            next_state, reward, done = env.step(action)
+            
+            # Record results
+            decisions.append((action, reward))
+            rewards.append(reward)
+            
+            if action == 0:
+                conservative_rewards.append(reward)
+            else:
+                aggressive_rewards.append(reward)
+            
+            episode_reward += reward
+            steps += 1
+            
+            # Update state
+            state = next_state
+        
+        total_reward += episode_reward
+        episode_lengths.append(steps)
+    
+    # Calculate metrics
+    avg_reward = total_reward / num_episodes if num_episodes > 0 else 0
+    avg_episode_length = np.mean(episode_lengths) if episode_lengths else 0
+    
+    total_actions = sum(action_counts.values())
+    action_distribution = {k: v / total_actions for k, v in action_counts.items()} if total_actions > 0 else {0: 0, 1: 0}
+    
+    avg_conservative_reward = np.mean(conservative_rewards) if conservative_rewards else 0
+    avg_aggressive_reward = np.mean(aggressive_rewards) if aggressive_rewards else 0
+    
+    success_rate = sum(1 for r in rewards if r > 0) / len(rewards) if rewards else 0
+    
+    return {
+        "avg_reward": avg_reward,
+        "avg_episode_length": avg_episode_length,
+        "action_distribution": action_distribution,
+        "decisions": decisions,
+        "rewards": rewards,
+        "states": np.array(states) if states else np.array([]),
+        "avg_conservative_reward": avg_conservative_reward,
+        "avg_aggressive_reward": avg_aggressive_reward,
+        "success_rate": success_rate
+    }
+
 # Visualization functions
 def visualize_training_progress(metrics, output_dir="plots", window_size=20):
     """Visualize training metrics including rewards, losses, and exploration rate."""
@@ -335,7 +427,7 @@ def visualize_training_progress(metrics, output_dir="plots", window_size=20):
         axes[0].plot(range(window_size-1, len(rewards)), smoothed_rewards, 
                    color='red', linewidth=2, label=f"Moving Average ({window_size})")
     
-    axes[0].set_ylabel("Average Reward")
+    axes[0].set_ylabel("Episode Reward")
     axes[0].set_title("Training Rewards")
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
@@ -488,249 +580,6 @@ def visualize_evaluation(metrics, feature_columns, output_dir="plots"):
     
     return plot_path
 
-def evaluate_policy_simple(policy, env_dataset, num_episodes=10):
-    """Evaluate the trained policy using a simplified approach that doesn't rely on TorchRL."""
-    env = SimpleAdEnv(env_dataset)
-    
-    total_reward = 0
-    episode_lengths = []
-    action_counts = {0: 0, 1: 0}  # 0=conservative, 1=aggressive
-    decisions = []
-    rewards = []
-    states = []
-    conservative_rewards = []
-    aggressive_rewards = []
-    
-    for episode in range(num_episodes):
-        done = False
-        episode_reward = 0
-        steps = 0
-        
-        # Reset environment
-        state, _ = env.reset()
-        
-        while not done:
-            # Get action from policy (without exploration)
-            with torch.no_grad():
-                # Create a TensorDict with the observation
-                td = TensorDict({"observation": state}, batch_size=[])
-                action_td = policy(td)
-                action = action_td["action"].argmax().item()
-            
-            # Record state
-            states.append(state.cpu().numpy())
-            action_counts[action] += 1
-            
-            # Step environment
-            next_state, reward, done = env.step(action)
-            
-            # Record results
-            decisions.append((action, reward))
-            rewards.append(reward)
-            
-            if action == 0:
-                conservative_rewards.append(reward)
-            else:
-                aggressive_rewards.append(reward)
-                
-            episode_reward += reward
-            steps += 1
-            
-            # Update state
-            state = next_state
-        
-        total_reward += episode_reward
-        episode_lengths.append(steps)
-    
-    # Calculate metrics
-    avg_reward = total_reward / num_episodes if num_episodes > 0 else 0
-    avg_episode_length = np.mean(episode_lengths) if episode_lengths else 0
-    
-    # Calculate action distribution
-    total_actions = sum(action_counts.values())
-    action_distribution = {k: v / total_actions for k, v in action_counts.items()} if total_actions > 0 else {0: 0, 1: 0}
-    
-    # Calculate average reward per action
-    avg_conservative_reward = np.mean(conservative_rewards) if conservative_rewards else 0
-    avg_aggressive_reward = np.mean(aggressive_rewards) if aggressive_rewards else 0
-    
-    # Calculate success rate (positive reward)
-    success_rate = sum(1 for r in rewards if r > 0) / len(rewards) if rewards else 0
-    
-    return {
-        "avg_reward": avg_reward,
-        "avg_episode_length": avg_episode_length,
-        "action_distribution": action_distribution,
-        "decisions": decisions,
-        "rewards": rewards,
-        "states": np.array(states) if states else np.array([]),
-        "avg_conservative_reward": avg_conservative_reward,
-        "avg_aggressive_reward": avg_aggressive_reward,
-        "success_rate": success_rate
-    }
-
-def create_network(env):
-    """Create policy network for the environment."""
-    # Define value network
-    value_mlp = MLP(
-        in_features=env.num_features,
-        out_features=env.action_spec.shape[-1],
-        num_cells=[64, 64]
-    )
-    
-    # Create TensorDictModule
-    value_net = TensorDictModule(
-        value_mlp,
-        in_keys=["observation"],
-        out_keys=["action_value"]
-    )
-    
-    # Create policy with QValueModule
-    policy = TensorDictSequential(
-        value_net,
-        QValueModule(spec=env.action_spec)
-    )
-    
-    return policy.to(env.device)
-
-def create_explorer(policy, env, annealing_steps=100_000, eps_init=0.9, eps_end=0.05):
-    """Create exploration module for epsilon-greedy exploration."""
-    exploration_module = EGreedyModule(
-        env.action_spec,
-        annealing_num_steps=annealing_steps,
-        eps_init=eps_init,
-        eps_end=eps_end
-    )
-    
-    policy_explore = TensorDictSequential(
-        policy,
-        exploration_module
-    )
-    
-    return policy_explore.to(env.device)
-
-def train_agent(env, total_frames=10_000, batch_size=64, lr=0.001, frames_per_batch=16):
-    """Train the reinforcement learning agent."""
-    # Create policy network
-    policy = create_network(env)
-    
-    # Create exploration policy
-    policy_explore = create_explorer(policy, env)
-    
-    # Training loop metrics
-    training_metrics = {
-        "rewards": [],
-        "losses": [],
-        "epsilon_values": []
-    }
-    
-    try:
-        # Create data collector
-        init_random_frames = min(1000, total_frames // 10)
-        collector = SyncDataCollector(
-            env,
-            policy_explore,
-            frames_per_batch=frames_per_batch,
-            total_frames=total_frames,
-            init_random_frames=init_random_frames
-        )
-        
-        # Create replay buffer
-        rb = ReplayBuffer(storage=LazyTensorStorage(max(10_000, total_frames)))
-        
-        # Create loss function
-        loss_module = DQNLoss(
-            value_network=policy,
-            action_space=env.action_spec,
-            delay_value=True
-        ).to(env.device)
-        
-        # Create optimizer - use optim.Adam here
-        optimizer = optim.Adam(loss_module.parameters(), lr=lr)
-        
-        # Create target network updater
-        updater = SoftUpdate(loss_module, eps=0.995)
-        
-        # Training loop
-        total_samples = 0
-        episode_rewards = []
-        
-        print("Starting training...")
-        start_time = datetime.now()
-        
-        for i, data in enumerate(collector):
-            # Add data to replay buffer
-            rb.extend(data)
-            total_samples += data.numel()
-            
-            # Collect episode rewards
-            done_indices = data["next", "done"].nonzero(as_tuple=True)[0]
-            if len(done_indices) > 0:
-                # Calculate episode rewards for completed episodes
-                for idx in done_indices:
-                    # Get the rewards for this episode
-                    if "reward" in data["next"]:
-                        episode_reward = data["next", "reward"][idx].item()
-                        episode_rewards.append(episode_reward)
-                        training_metrics["rewards"].append(episode_reward)
-                    
-                    # Log epsilon value
-                    exploration_module = policy_explore[-1]
-                    training_metrics["epsilon_values"].append(exploration_module.eps.item())
-            
-            # Perform optimization steps if we have enough data
-            if len(rb) > batch_size:
-                batch_losses = []
-                
-                # Multiple optimization steps per data collection
-                optim_steps = 4
-                for _ in range(optim_steps):
-                    # Sample from replay buffer
-                    sample = rb.sample(batch_size)
-                    
-                    # Compute loss
-                    loss_vals = loss_module(sample)
-                    loss = loss_vals["loss"]
-                    batch_losses.append(loss.item())
-                    
-                    # Optimization step
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    
-                    # Update target network
-                    updater.step()
-                    
-                    # Update exploration rate
-                    exploration_module = policy_explore[-1]
-                    exploration_module.step(batch_size)
-                
-                # Record average loss
-                avg_loss = sum(batch_losses) / len(batch_losses)
-                training_metrics["losses"].append(avg_loss)
-                
-                # Log progress
-                if i % 10 == 0:
-                    if episode_rewards:
-                        avg_reward = sum(episode_rewards[-10:]) / min(10, len(episode_rewards[-10:]))
-                    else:
-                        avg_reward = 0
-                    
-                    print(f"Iteration {i}, Samples: {total_samples}, Avg Reward: {avg_reward:.2f}, Loss: {avg_loss:.6f}, Epsilon: {exploration_module.eps.item():.2f}")
-            
-            # Check if we've collected enough samples
-            if total_samples >= total_frames:
-                break
-    except Exception as e:
-        print(f"Training error: {str(e)}")
-        print(traceback.format_exc())
-        
-    training_time = (datetime.now() - start_time).total_seconds()
-    print(f"Training completed in {training_time:.2f} seconds")
-    print(f"Collected {total_samples} samples, completed {len(training_metrics['rewards'])} episodes")
-    
-    return policy, training_metrics
-
 def main():
     """Main function to run the training and evaluation pipeline."""
     # Create output directory with timestamp
@@ -760,12 +609,14 @@ def main():
     print(dataset[feature_columns].describe().to_string())
     
     # Create environment
-    env = AdOptimizationEnv(dataset, device=device)
+    env = AdEnv(dataset)
+    
+    # Create agent
+    agent = DQNAgent(state_size=len(feature_columns), action_size=2, learning_rate=0.001)
     
     # Train agent
     print("\nTraining RL agent...")
-    total_frames = 10_000  # Adjust based on your needs
-    policy, training_metrics = train_agent(env, total_frames=total_frames, frames_per_batch=16)
+    training_metrics = train_dqn(env, agent, num_episodes=200, batch_size=64)
     
     # Check if we have training data to plot
     if training_metrics["rewards"]:
@@ -776,12 +627,10 @@ def main():
     else:
         print("Warning: No training rewards collected, skipping training visualization")
     
-    # Evaluate policy using the simplified approach
-    print("Evaluating trained policy...")
+    # Evaluate agent
+    print("Evaluating trained agent...")
     eval_episodes = 10
-    
-    # Use the simplified evaluation approach which doesn't rely on TorchRL's structure
-    eval_metrics = evaluate_policy_simple(policy, dataset, num_episodes=eval_episodes)
+    eval_metrics = evaluate_agent(env, agent, num_episodes=eval_episodes)
     
     # Save evaluation metrics
     eval_metrics_path = f"{run_dir}/evaluation_metrics.txt"
@@ -801,14 +650,14 @@ def main():
     # Save model
     model_path = f"{run_dir}/ad_optimization_model.pt"
     torch.save({
-        'model_state_dict': policy.state_dict(),
+        'model_state_dict': agent.policy_net.state_dict(),
         'feature_columns': feature_columns,
         'training_metrics': training_metrics
     }, model_path)
     print(f"Model saved to {model_path}")
     
     print(f"Pipeline completed successfully. All results saved to {run_dir}")
-    return policy, training_metrics, eval_metrics
+    return agent, training_metrics, eval_metrics
 
 if __name__ == "__main__":
     main()
